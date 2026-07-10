@@ -1,0 +1,33 @@
+# Dependências
+node_modules/
+
+# Ambiente
+.env
+.env.local
+.env.*.local
+
+# Logs
+*.log
+npm-debug.log*
+
+# Build
+dist/
+build/
+
+# PWA / Service Worker gerado
+sw.js.map
+workbox-*.js
+
+# Editor / SO
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Testes / cobertura
+coverage/
+
+# Certificados locais (necessários pra testar Web Bluetooth via HTTPS local)
+*.pem
+*.key
+*.crt

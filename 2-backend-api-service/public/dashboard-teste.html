@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+<meta charset="UTF-8" />
+<title>Dashboard de Teste - Profissional</title>
+<style>
+  body { font-family: system-ui, sans-serif; background: #0f172a; color: #e2e8f0; padding: 24px; }
+  h1 { font-size: 20px; margin-bottom: 4px; }
+  .sub { color: #94a3b8; margin-bottom: 20px; font-size: 13px; }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  .card { background: #1e293b; border-radius: 12px; padding: 16px; }
+  .card h2 { font-size: 14px; color: #94a3b8; margin: 0 0 12px; text-transform: uppercase; letter-spacing: .05em; }
+  .metrics { display: flex; gap: 24px; margin-bottom: 12px; }
+  .metric { text-align: center; }
+  .metric .value { font-size: 36px; font-weight: 700; }
+  .metric .label { font-size: 11px; color: #94a3b8; }
+  .spo2-ok { color: #4ade80; }
+  .spo2-warn { color: #fbbf24; }
+  .spo2-crit { color: #f87171; }
+  .status { display: inline-block; padding: 2px 10px; border-radius: 999px; font-size: 11px; }
+  .status.connected { background: #16653433; color: #4ade80; }
+  .status.disconnected { background: #7f1d1d33; color: #f87171; }
+  .log { font-size: 11px; color: #64748b; height: 90px; overflow-y: auto; margin-top: 12px; font-family: monospace; }
+  .controls { margin: 20px 0; display: flex; gap: 8px; }
+  button { background: #334155; color: #e2e8f0; border: none; padding: 8px 14px; border-radius: 6px; cursor: pointer; font-size: 13px; }
+  button:hover { background: #475569; }
+  .latency { font-size: 11px; color: #64748b; }
+</style>
+</head>
+<body>
+  <h1>Painel de comparação - WebSocket vs SSE</h1>
+  <p class="sub">
+    Simula o dashboard do fisioterapeuta recebendo dados do mesmo paciente por dois protocolos, ao mesmo tempo.<br>
+    Este dashboard conecta no <strong>api-service</strong> (porta 3001). Os botões de cenário falam direto com o
+    <strong>oximetro-service</strong> (porta 3002), já que é lá que os dados são gerados.
+  </p>
+
+  <div class="controls">
+    <button onclick="setScenario('rest')">Cenário: Repouso</button>
+    <button onclick="setScenario('exercise')">Cenário: Exercício</button>
+    <button onclick="setScenario('desaturation')">Cenário: Dessaturação</button>
+  </div>
+
+  <div class="grid">
+    <div class="card">
+      <h2>Via WebSocket <span id="ws-status" class="status disconnected">desconectado</span></h2>
+      <div class="metrics">
+        <div class="metric"><div id="ws-spo2" class="value">--</div><div class="label">SpO2 %</div></div>
+        <div class="metric"><div id="ws-hr" class="value">--</div><div class="label">BPM</div></div>
+      </div>
+      <div class="latency" id="ws-latency">latência: --</div>
+      <div class="log" id="ws-log"></div>
+    </div>
+
+    <div class="card">
+      <h2>Via SSE <span id="sse-status" class="status disconnected">desconectado</span></h2>
+      <div class="metrics">
+        <div class="metric"><div id="sse-spo2" class="value">--</div><div class="label">SpO2 %</div></div>
+        <div class="metric"><div id="sse-hr" class="value">--</div><div class="label">BPM</div></div>
+      </div>
+      <div class="latency" id="sse-latency">latência: --</div>
+      <div class="log" id="sse-log"></div>
+    </div>
+  </div>
+
+  <script>
+    const API_HOST = 'localhost:3001';      // api-service
+    const OXIMETRO_HOST = 'localhost:3002'; // oximetro-service
+
+    function spo2Class(v) {
+      if (v === null) return '';
+      if (v >= 95) return 'spo2-ok';
+      if (v >= 90) return 'spo2-warn';
+      return 'spo2-crit';
+    }
+
+    function render(prefix, reading) {
+      const receivedAt = Date.now();
+      const sentAt = new Date(reading.timestamp).getTime();
+      document.getElementById(`${prefix}-spo2`).textContent = reading.spo2 ?? '--';
+      document.getElementById(`${prefix}-spo2`).className = 'value ' + spo2Class(reading.spo2);
+      document.getElementById(`${prefix}-hr`).textContent = reading.heartRate ?? '--';
+      document.getElementById(`${prefix}-latency`).textContent = `latência: ${receivedAt - sentAt} ms | sinal: ${reading.signalQuality}`;
+      const log = document.getElementById(`${prefix}-log`);
+      log.textContent = `${reading.timestamp} | spo2=${reading.spo2} hr=${reading.heartRate}\n` + log.textContent;
+    }
+
+    function setStatus(prefix, connected) {
+      const el = document.getElementById(`${prefix}-status`);
+      el.textContent = connected ? 'conectado' : 'desconectado';
+      el.className = 'status ' + (connected ? 'connected' : 'disconnected');
+    }
+
+    // --- WebSocket (api-service) ---
+    let ws;
+    function connectWS() {
+      ws = new WebSocket(`ws://${API_HOST}/ws/professional`);
+      ws.onopen = () => setStatus('ws', true);
+      ws.onclose = () => { setStatus('ws', false); setTimeout(connectWS, 1500); };
+      ws.onmessage = (event) => render('ws', JSON.parse(event.data));
+    }
+    connectWS();
+
+    // --- SSE (api-service) ---
+    const evtSource = new EventSource(`http://${API_HOST}/sse/professional`);
+    evtSource.onopen = () => setStatus('sse', true);
+    evtSource.onerror = () => setStatus('sse', false);
+    evtSource.onmessage = (event) => render('sse', JSON.parse(event.data));
+
+    // Comando de cenário vai direto pro oximetro-service, que é quem gera os dados
+    async function setScenario(scenario) {
+      await fetch(`http://${OXIMETRO_HOST}/api/scenario`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ scenario }),
+      });
+    }
+
+    // Fluxo pra testar: 1) suba oximetro-service (3002) e api-service (3001)
+    // 2) abra este dashboard 3) abra patient-simulator.html (dentro do oximetro-service)
+  </script>
+</body>
+</html>

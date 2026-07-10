@@ -1,50 +1,73 @@
-# POC - Telereabilitação Pulmonar: Oxímetro → PWA → API → Dashboard
+# Telereabilitação Pulmonar - Fluxo Oxímetro → PWA → API → Dashboard
 
-Projeto de teste para validar o pipeline de dados antes de integrar o Bluetooth real.
+Projeto segmentado em serviços independentes, refletindo os limites reais do sistema.
+
+## Serviços
+
+| Serviço | Porta | Responsabilidade |
+|---|---|---|
+| `oximetro-service` | 3002 | Simula o dispositivo BLE (emite leituras mockadas). Também hospeda `patient-simulator.html`, que representa a PWA. |
+| `api-service` | 3001 | Camada intermediária: recebe da PWA, distribui pro(s) profissional(is) via WS e SSE. Não gera dado nenhum. |
+| `interface-profissional` | - | *(próxima etapa - React)* dashboard real do fisioterapeuta |
+
+## Por que separar assim
+
+No mundo real, esses são três atores completamente distintos:
+- O **oxímetro** não conhece a API, nem o dashboard. Ele só fala BLE com quem estiver por perto (a PWA).
+- A **PWA** é quem faz a ponte: lê do Bluetooth, manda pra API.
+- A **API** não sabe nada sobre Bluetooth. Ela só recebe leituras (de qualquer fonte que fale o protocolo certo) e distribui.
+
+Separar em serviços agora, mesmo mockado, evita que essas responsabilidades se misturem no código e facilita trocar qualquer uma das pontas depois (ex: trocar o mock pelo Bluetooth real sem tocar na API).
 
 ## Como rodar
 
+Precisa de **3 terminais** (2 por enquanto):
+
 ```bash
-cd backend
+# Terminal 1
+cd oximetro-service
 npm install
 npm start
+# -> roda em http://localhost:3002
+
+# Terminal 2
+cd api-service
+npm install
+npm start
+# -> roda em http://localhost:3001
 ```
 
-O servidor sobe em `http://localhost:3001` e já serve as páginas de teste:
+Depois, no navegador:
 
-- `http://localhost:3001/patient-simulator.html` — simula a PWA do paciente (conecta em `/ws/patient` e recebe o stream mockado a cada 1s)
-- `http://localhost:3001/dashboard-teste.html` — simula o dashboard do fisioterapeuta, recebendo os **mesmos dados simultaneamente via WebSocket e via SSE**, lado a lado, com latência medida em tempo real
+1. Abra `http://localhost:3001/dashboard-teste.html` (dashboard do profissional) — ele já conecta e fica esperando dados.
+2. Abra `http://localhost:3002/patient-simulator.html` (PWA) — ela conecta no oxímetro E na API, e o stream começa a fluir ponta a ponta.
 
-**Ordem de teste:** abra `dashboard-teste.html` primeiro (ele já conecta e espera), depois abra `patient-simulator.html` em outra aba — o stream começa a fluir para os dois protocolos ao mesmo tempo, e você consegue comparar latência e comportamento de reconexão.
-
-Use os botões "Cenário: Repouso / Exercício / Dessaturação" no dashboard para simular condições diferentes do paciente durante o exercício — isso é o tipo de evento que mais importa na reabilitação pulmonar (queda de SpO2 durante esforço).
+Use os botões de cenário no dashboard para simular repouso/exercício/dessaturação — a chamada vai direto pro `oximetro-service` (é lá que o estado do mock vive agora).
 
 ## Estrutura
 
 ```
-backend/
-  server.js          -> API: WS (paciente + profissional) + SSE + REST
-  mockOximeter.js     -> gerador de leituras mockadas realistas
-  public/
-    patient-simulator.html   -> simula a PWA do paciente
-    dashboard-teste.html     -> simula o dashboard do profissional (WS vs SSE)
+fluxo-oximetro/
+  oximetro-service/
+    server.js          -> expõe as leituras via WS (/ws/device) + REST (/api/scenario)
+    mockOximeter.js     -> gerador de leituras mockadas
+    package.json
+    public/
+      patient-simulator.html   -> representa a PWA (device -> api-service)
+
+  api-service/
+    server.js          -> WS (/ws/patient, /ws/professional) + SSE (/sse/professional)
+    package.json
+    public/
+      dashboard-teste.html     -> representa o dashboard do profissional (WS vs SSE)
+
+  .gitignore
+  README.md
 ```
 
-## Por que essa arquitetura
+## Próximos passos
 
-**WebSocket paciente→API:** a PWA nunca "empurra" um HTTP POST a cada leitura — mantém uma conexão persistente e envia continuamente. Menor overhead, e já deixa aberto o canal de volta (a API pode mandar comandos pro app do paciente: iniciar/parar sessão, pedir recalibração, etc.).
-
-**WebSocket API→dashboard (recomendado) vs SSE (testado em paralelo):** ambos resolvem o broadcast pra múltiplos profissionais vendo o mesmo paciente. A diferença prática que você vai notar testando:
-- SSE reconecta sozinho nativamente (`EventSource`), WS você programa a reconexão (já está no `dashboard-teste.html`)
-- SSE não permite o dashboard mandar nada de volta pro servidor (ex: o fisioterapeuta clicar "marcar evento" ou "iniciar cenário")
-- WS funciona igual em ambas as pontas, então você usa a mesma lib/mental model nos dois lados
-
-**WebRTC não foi implementado aqui de propósito.** Ele resolve um problema que você não tem: comunicação P2P de baixíssima latência sem depender do servidor (ótimo pra vídeo/áudio). No seu caso os dados *precisam* passar pela API — pra persistir no banco, autenticar, disparar alertas, e permitir múltiplos profissionais olhando o mesmo paciente sem multiplicar conexões P2P. Adicionar WebRTC aqui significa herdar STUN/TURN/signaling só pra reinventar o que WS já faz de graça.
-
-## Próximos passos reais
-
-1. **Trocar o mock pelo Bluetooth real na PWA:** usar a [Web Bluetooth API](https://developer.mozilla.org/en-US/docs/Web/API/Web_Bluetooth_API) — a maioria dos oxímetros de consumo expõe o profile `Pulse Oximeter` (UUID `0x1822`) via GATT. O evento `characteristicvaluechanged` substitui o `setInterval` do mock, mantendo o mesmo formato de payload que já está definido em `mockOximeter.js` — assim o resto do pipeline não muda.
-2. **Persistência:** decidir se toda leitura é gravada (alto volume) ou se só eventos relevantes (desaturação, início/fim de sessão) viram registro permanente — importante pra prontuário e auditoria em saúde.
-3. **Autenticação/autorização:** o `/ws/professional` e `/ws/patient` aqui estão abertos; em produção, token JWT na query string ou no handshake, e vincular o paciente correto ao fisioterapeuta correto.
-4. **Alertas:** já dá pra adicionar no `server.js`, dentro de `broadcastToProfessionals`, uma checagem `if (reading.spo2 < 90) dispararAlerta(...)`.
-5. **PWA de verdade:** manifest.json, service worker, e testar o Web Bluetooth em Android (Chrome) — importante saber que **Web Bluetooth não funciona no Safari/iOS**, o que pode ser um limitador dependendo do público de pacientes.
+1. **`interface-profissional`** como projeto React separado, consumindo `ws://localhost:3001/ws/professional` (ou SSE, dependendo do que a comparação mostrar).
+2. Trocar o `patient-simulator.html` por uma PWA React de verdade, com manifest + service worker, mantendo a mesma lógica de "conecta no device, retransmite pra API".
+3. Quando for pro Bluetooth real: o `oximetro-service` deixa de existir como servidor de rede — a PWA passa a ler direto via Web Bluetooth API. O `api-service` não muda nada, porque ele só espera receber JSON em `/ws/patient`, não importa a origem.
+4. Autenticação nos WS (`/ws/patient` e `/ws/professional` estão abertos) e vínculo paciente↔fisioterapeuta antes de qualquer uso com dado real.
