@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+<meta charset="UTF-8" />
+<title>PWA do Paciente (simulador)</title>
+<style>
+  body { font-family: system-ui, sans-serif; background: #0f172a; color: #e2e8f0; padding: 24px; }
+  .card { background: #1e293b; border-radius: 12px; padding: 20px; max-width: 320px; text-align: center; }
+  .value { font-size: 48px; font-weight: 700; }
+  .status { font-size: 12px; color: #94a3b8; margin-top: 8px; }
+</style>
+</head>
+<body>
+  <h1>PWA do Paciente (simulador)</h1>
+  <p style="color:#94a3b8; font-size:13px;">
+    No app real, aqui entraria a leitura via Web Bluetooth API (GATT).
+    Neste simulador, ao conectar, o backend já gera e envia os valores mockados.
+  </p>
+  <div class="card">
+    <div id="spo2" class="value">--</div>
+    <div>SpO2 %</div>
+    <div id="hr" class="value">--</div>
+    <div>BPM</div>
+    <div id="status" class="status">conectando...</div>
+  </div>
+
+  <script>
+    const API_HOST = location.hostname === '' ? 'localhost' : location.hostname;
+    const ws = new WebSocket(`ws://${API_HOST}:3001/ws/patient`);
+    ws.onopen = () => document.getElementById('status').textContent = 'conectado - transmitindo';
+    ws.onclose = () => document.getElementById('status').textContent = 'desconectado';
+    ws.onmessage = (event) => {
+      const reading = JSON.parse(event.data);
+      document.getElementById('spo2').textContent = reading.spo2 ?? '--';
+      document.getElementById('hr').textContent = reading.heartRate ?? '--';
+    };
+  </script>
+</body>
+</html>
