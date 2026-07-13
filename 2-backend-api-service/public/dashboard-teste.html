@@ -20,6 +20,11 @@
   .status { display: inline-block; padding: 2px 10px; border-radius: 999px; font-size: 11px; }
   .status.connected { background: #16653433; color: #4ade80; }
   .status.disconnected { background: #7f1d1d33; color: #f87171; }
+  .patient-status { margin: 16px 0; padding: 14px 16px; border-radius: 12px; font-size: 14px; border: 1px solid transparent; }
+  button.active { background: #16a34a; }
+  .patient-status.waiting { background: #7f1d1d33; border-color: #7f1d1d; color: #f87171; }
+  .patient-status.active { background: #16653433; border-color: #166534; color: #4ade80; }
+  .patient-status strong { display: inline-block; margin-right: 8px; }
   .log { font-size: 11px; color: #64748b; height: 90px; overflow-y: auto; margin-top: 12px; font-family: monospace; }
   .controls { margin: 20px 0; display: flex; gap: 8px; }
   button { background: #334155; color: #e2e8f0; border: none; padding: 8px 14px; border-radius: 6px; cursor: pointer; font-size: 13px; }
@@ -36,9 +41,14 @@
   </p>
 
   <div class="controls">
+    <button id="toggle-connection-button" class="active" onclick="toggleDeviceConnection()">Simular dispositivo conectado: ON</button>
     <button onclick="setScenario('rest')">Cenário: Repouso</button>
     <button onclick="setScenario('exercise')">Cenário: Exercício</button>
     <button onclick="setScenario('desaturation')">Cenário: Dessaturação</button>
+  </div>
+
+  <div id="patient-status" class="patient-status active">
+    <strong>Conexão: ON</strong> Dispositivo conectado e transmitindo dados.
   </div>
 
   <div class="grid">
@@ -75,20 +85,69 @@
     }
 
     function render(prefix, reading) {
+      if (!simulateDeviceConnected) return;
+      lastDataReceivedAt = Date.now();
       const receivedAt = Date.now();
       const sentAt = new Date(reading.timestamp).getTime();
       document.getElementById(`${prefix}-spo2`).textContent = reading.spo2 ?? '--';
       document.getElementById(`${prefix}-spo2`).className = 'value ' + spo2Class(reading.spo2);
       document.getElementById(`${prefix}-hr`).textContent = reading.heartRate ?? '--';
-      document.getElementById(`${prefix}-latency`).textContent = `latência: ${receivedAt - sentAt} ms | sinal: ${reading.signalQuality}`;
+      document.getElementById(`${prefix}-latency`).textContent = `latência: ${receivedAt - sentAt} ms | Qualidade: ${reading.signalQuality}`;
       const log = document.getElementById(`${prefix}-log`);
-      log.textContent = `${reading.timestamp} | spo2=${reading.spo2} hr=${reading.heartRate}\n` + log.textContent;
+      log.textContent = `${reading.timestamp} | spo2=${reading.spo2} hr=${reading.heartRate} qualidade=${reading.signalQuality}\n` + log.textContent;
+      setPatientConnected(true);
     }
+
+    let simulateDeviceConnected = true;
 
     function setStatus(prefix, connected) {
       const el = document.getElementById(`${prefix}-status`);
       el.textContent = connected ? 'conectado' : 'desconectado';
       el.className = 'status ' + (connected ? 'connected' : 'disconnected');
+    }
+
+    function clearMonitorData() {
+      ['ws', 'sse'].forEach((prefix) => {
+        document.getElementById(`${prefix}-spo2`).textContent = '--';
+        document.getElementById(`${prefix}-spo2`).className = 'value';
+        document.getElementById(`${prefix}-hr`).textContent = '--';
+        document.getElementById(`${prefix}-latency`).textContent = 'Conexão: OFF | Qualidade: lost';
+      });
+    }
+
+    function setPatientConnected(connected) {
+      const el = document.getElementById('patient-status');
+      if (connected) {
+        el.className = 'patient-status active';
+        el.innerHTML = '<strong>Conexão: ON</strong> Dispositivo conectado e transmitindo dados.';
+      } else {
+        el.className = 'patient-status waiting';
+        el.innerHTML = '<strong>Conexão: OFF</strong> Dispositivo desconectado. Abra `patient-simulator.html` ou ative o toggle para conectar.';
+      }
+    }
+
+    async function toggleDeviceConnection() {
+      simulateDeviceConnected = !simulateDeviceConnected;
+      const button = document.getElementById('toggle-connection-button');
+      button.textContent = simulateDeviceConnected
+        ? 'Simular dispositivo conectado: ON'
+        : 'Simular dispositivo conectado: OFF';
+      button.classList.toggle('active', simulateDeviceConnected);
+
+      await fetch(`http://${API_HOST}/api/connection`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ connected: simulateDeviceConnected }),
+      });
+
+      if (!simulateDeviceConnected) {
+        setStatus('ws', false);
+        setStatus('sse', false);
+        setPatientConnected(false);
+        clearMonitorData();
+      } else {
+        setPatientConnected(true);
+      }
     }
 
     // --- WebSocket (api-service) ---
@@ -97,7 +156,9 @@
       ws = new WebSocket(`ws://${API_HOST}/ws/professional`);
       ws.onopen = () => setStatus('ws', true);
       ws.onclose = () => { setStatus('ws', false); setTimeout(connectWS, 1500); };
-      ws.onmessage = (event) => render('ws', JSON.parse(event.data));
+      ws.onmessage = (event) => {
+        render('ws', JSON.parse(event.data));
+      };
     }
     connectWS();
 
@@ -105,7 +166,27 @@
     const evtSource = new EventSource(`http://${API_HOST}/sse/professional`);
     evtSource.onopen = () => setStatus('sse', true);
     evtSource.onerror = () => setStatus('sse', false);
-    evtSource.onmessage = (event) => render('sse', JSON.parse(event.data));
+    evtSource.onmessage = (event) => {
+      render('sse', JSON.parse(event.data));
+    };
+
+    // Reinicia o aviso de paciente desconectado se não chegar dado em 4s
+    let lastDataReceivedAt = Date.now();
+    function checkPatientConnection() {
+      if (!simulateDeviceConnected) {
+        setStatus('ws', false);
+        setStatus('sse', false);
+        setPatientConnected(false);
+        clearMonitorData();
+        return;
+      }
+
+      if (Date.now() - lastDataReceivedAt > 4000) {
+        setPatientConnected(false);
+      }
+    }
+
+    setInterval(checkPatientConnection, 1000);
 
     // Comando de cenário vai direto pro oximetro-service, que é quem gera os dados
     async function setScenario(scenario) {

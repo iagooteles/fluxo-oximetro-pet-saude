@@ -8,6 +8,7 @@
   .card { background: #1e293b; border-radius: 12px; padding: 20px; max-width: 320px; text-align: center; }
   .value { font-size: 48px; font-weight: 700; }
   .status { font-size: 12px; color: #94a3b8; margin-top: 8px; }
+  .log { margin-top: 16px; background: #0f172a; border: 1px solid #334155; border-radius: 12px; color: #cbd5e1; padding: 14px; max-width: 640px; max-height: 320px; overflow-y: auto; text-align: left; white-space: pre-wrap; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 12px; }
 </style>
 </head>
 <body>
@@ -24,15 +25,58 @@
     <div id="status" class="status">conectando...</div>
   </div>
 
+  <div class="card">
+    <h2>Logs de leitura</h2>
+    <pre id="log" class="log">Aguardando a primeira leitura do oxímetro...</pre>
+  </div>
+
   <script>
-    const API_HOST = location.hostname === '' ? 'localhost' : location.hostname;
-    const ws = new WebSocket(`ws://${API_HOST}:3001/ws/patient`);
-    ws.onopen = () => document.getElementById('status').textContent = 'conectado - transmitindo';
-    ws.onclose = () => document.getElementById('status').textContent = 'desconectado';
-    ws.onmessage = (event) => {
+    const HOST = location.hostname === '' ? 'localhost' : location.hostname;
+    const deviceWs = new WebSocket(`ws://${HOST}:3002/ws/device`);
+    const apiWs = new WebSocket(`ws://${HOST}:3001/ws/patient`);
+    const logElement = document.getElementById('log');
+    const pendingReadings = [];
+
+    function addLog(message) {
+      logElement.textContent = `${message}\n${logElement.textContent}`;
+    }
+
+    deviceWs.onopen = () => {
+      document.getElementById('status').textContent = 'conectado ao oxímetro';
+      addLog(`[${new Date().toLocaleTimeString()}] conectado ao dispositivo`);
+    };
+
+    deviceWs.onclose = () => {
+      document.getElementById('status').textContent = 'desconectado do dispositivo';
+      addLog(`[${new Date().toLocaleTimeString()}] desconectado do dispositivo`);
+    };
+
+    deviceWs.onerror = (event) => {
+      addLog(`[${new Date().toLocaleTimeString()}] erro dispositivo WS: ${event.message || 'erro desconhecido'}`);
+    };
+
+    apiWs.onopen = () => {
+      addLog(`[${new Date().toLocaleTimeString()}] conectado ao api-service`);
+      while (pendingReadings.length > 0) {
+        apiWs.send(pendingReadings.shift());
+      }
+    };
+
+    apiWs.onclose = () => addLog(`[${new Date().toLocaleTimeString()}] desconectado do api-service`);
+    apiWs.onerror = (event) => addLog(`[${new Date().toLocaleTimeString()}] erro api WS: ${event.message || 'erro desconhecido'}`);
+
+    deviceWs.onmessage = (event) => {
       const reading = JSON.parse(event.data);
       document.getElementById('spo2').textContent = reading.spo2 ?? '--';
       document.getElementById('hr').textContent = reading.heartRate ?? '--';
+      const receivedAt = new Date().toISOString();
+      addLog(`[${receivedAt}] ${reading.timestamp} | spo2=${reading.spo2} hr=${reading.heartRate} perfusion=${reading.perfusionIndex} sinal=${reading.signalQuality} cenário=${reading.scenario}`);
+
+      if (apiWs.readyState === WebSocket.OPEN) {
+        apiWs.send(event.data);
+      } else {
+        pendingReadings.push(event.data);
+      }
     };
   </script>
 </body>

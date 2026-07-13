@@ -42,20 +42,7 @@ function getScenario() {
 }
 
 function generateReading() {
-  // Simula perda de sinal ocasional (dedo se mexeu, sensor mal posicionado)
-  const signalLost = Math.random() < 0.03;
-
-  if (signalLost) {
-    return {
-      spo2: null,
-      heartRate: null,
-      perfusionIndex: null,
-      signalQuality: 'lost',
-      scenario: state.scenario,
-      timestamp: new Date().toISOString(),
-    };
-  }
-
+  // Emite leituras consistentes a cada segundo no cenário atual.
   let targetSpo2Range = [95, 99];
   let targetHrRange = [60, 90];
 
