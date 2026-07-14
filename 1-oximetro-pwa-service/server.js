@@ -54,4 +54,5 @@ const PORT = process.env.PORT || 3002;
 server.listen(PORT, () => {
   console.log(`[oximetro-service] rodando em http://localhost:${PORT}`);
   console.log(`WS do dispositivo: ws://localhost:${PORT}/ws/device`);
+  console.log(`Painel: http://localhost:3002/patient-simulator.html`);
 });

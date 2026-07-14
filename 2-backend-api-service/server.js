@@ -22,6 +22,7 @@ const wss = new WebSocketServer({ server });
 const professionalSockets = new Set();
 const sseClients = new Set();
 let patientConnectionEnabled = true;
+let messageCounter = 0;
 let lastPatientReading = {
   spo2: null,
   heartRate: null,
@@ -73,8 +74,17 @@ function makeDisconnectedReading() {
   };
 }
 
+function enrichReading(reading) {
+  return {
+    ...reading,
+    seq: ++messageCounter,
+    serverTimestamp: new Date().toISOString(),
+  };
+}
+
 function broadcastToProfessionals(reading) {
-  const payload = JSON.stringify(reading);
+  const outgoingReading = enrichReading(reading);
+  const payload = JSON.stringify(outgoingReading);
 
   professionalSockets.forEach((sock) => {
     if (sock.readyState === sock.OPEN) sock.send(payload);

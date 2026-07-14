@@ -30,6 +30,10 @@
   button { background: #334155; color: #e2e8f0; border: none; padding: 8px 14px; border-radius: 6px; cursor: pointer; font-size: 13px; }
   button:hover { background: #475569; }
   .latency { font-size: 11px; color: #64748b; }
+  .stats-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin-top: 10px; }
+  .stat { background: rgba(15, 23, 42, 0.6); border: 1px solid #334155; border-radius: 8px; padding: 8px; }
+  .stat strong { display: block; font-size: 13px; color: #f8fafc; }
+  .stat span { display: block; font-size: 10px; color: #64748b; text-transform: uppercase; letter-spacing: .04em; margin-top: 2px; }
 </style>
 </head>
 <body>
@@ -59,6 +63,12 @@
         <div class="metric"><div id="ws-hr" class="value">--</div><div class="label">BPM</div></div>
       </div>
       <div class="latency" id="ws-latency">latência: --</div>
+      <div class="stats-grid">
+        <div class="stat"><strong id="ws-avg-latency">--</strong><span>média</span></div>
+        <div class="stat"><strong id="ws-max-latency">--</strong><span>pico</span></div>
+        <div class="stat"><strong id="ws-packet-loss">0</strong><span>perdas</span></div>
+        <div class="stat"><strong id="ws-reconnects">0</strong><span>reconexões</span></div>
+      </div>
       <div class="log" id="ws-log"></div>
     </div>
 
@@ -69,6 +79,12 @@
         <div class="metric"><div id="sse-hr" class="value">--</div><div class="label">BPM</div></div>
       </div>
       <div class="latency" id="sse-latency">latência: --</div>
+      <div class="stats-grid">
+        <div class="stat"><strong id="sse-avg-latency">--</strong><span>média</span></div>
+        <div class="stat"><strong id="sse-max-latency">--</strong><span>pico</span></div>
+        <div class="stat"><strong id="sse-packet-loss">0</strong><span>perdas</span></div>
+        <div class="stat"><strong id="sse-reconnects">0</strong><span>reconexões</span></div>
+      </div>
       <div class="log" id="sse-log"></div>
     </div>
   </div>
@@ -84,18 +100,52 @@
       return 'spo2-crit';
     }
 
+    const protocolStats = {
+      ws: { received: 0, lost: 0, totalLatencyMs: 0, maxLatencyMs: 0, reconnects: 0, lastSeq: null },
+      sse: { received: 0, lost: 0, totalLatencyMs: 0, maxLatencyMs: 0, reconnects: 0, lastSeq: null },
+    };
+
     function render(prefix, reading) {
       if (!simulateDeviceConnected) return;
       lastDataReceivedAt = Date.now();
       const receivedAt = Date.now();
-      const sentAt = new Date(reading.timestamp).getTime();
+      const sentAt = Date.parse(reading.timestamp);
+      const latencyMs = Number.isFinite(sentAt) ? receivedAt - sentAt : null;
+
       document.getElementById(`${prefix}-spo2`).textContent = reading.spo2 ?? '--';
       document.getElementById(`${prefix}-spo2`).className = 'value ' + spo2Class(reading.spo2);
       document.getElementById(`${prefix}-hr`).textContent = reading.heartRate ?? '--';
-      document.getElementById(`${prefix}-latency`).textContent = `latência: ${receivedAt - sentAt} ms | Qualidade: ${reading.signalQuality}`;
+      document.getElementById(`${prefix}-latency`).textContent = `latência: ${latencyMs ?? '--'} ms | Qualidade: ${reading.signalQuality}`;
+
+      const state = protocolStats[prefix];
+      if (state && Number.isFinite(latencyMs)) {
+        state.received += 1;
+        state.totalLatencyMs += latencyMs;
+        state.maxLatencyMs = Math.max(state.maxLatencyMs, latencyMs);
+      }
+
+      if (state && Number.isFinite(reading.seq)) {
+        if (state.lastSeq !== null && reading.seq > state.lastSeq + 1) {
+          state.lost += reading.seq - state.lastSeq - 1;
+        }
+        state.lastSeq = reading.seq;
+      }
+
+      renderProtocolStats(prefix);
+
       const log = document.getElementById(`${prefix}-log`);
-      log.textContent = `${reading.timestamp} | spo2=${reading.spo2} hr=${reading.heartRate} qualidade=${reading.signalQuality}\n` + log.textContent;
+      log.textContent = `${reading.timestamp} | seq=${reading.seq ?? '--'} | spo2=${reading.spo2} hr=${reading.heartRate} qualidade=${reading.signalQuality}\n` + log.textContent;
       setPatientConnected(true);
+    }
+
+    function renderProtocolStats(prefix) {
+      const state = protocolStats[prefix];
+      if (!state) return;
+      const avg = state.received > 0 ? Math.round(state.totalLatencyMs / state.received) : '--';
+      document.getElementById(`${prefix}-avg-latency`).textContent = avg === '--' ? '--' : `${avg} ms`;
+      document.getElementById(`${prefix}-max-latency`).textContent = state.maxLatencyMs > 0 ? `${state.maxLatencyMs} ms` : '--';
+      document.getElementById(`${prefix}-packet-loss`).textContent = `${state.lost}`;
+      document.getElementById(`${prefix}-reconnects`).textContent = `${state.reconnects}`;
     }
 
     let simulateDeviceConnected = true;
@@ -155,7 +205,12 @@
     function connectWS() {
       ws = new WebSocket(`ws://${API_HOST}/ws/professional`);
       ws.onopen = () => setStatus('ws', true);
-      ws.onclose = () => { setStatus('ws', false); setTimeout(connectWS, 1500); };
+      ws.onclose = () => {
+        protocolStats.ws.reconnects += 1;
+        renderProtocolStats('ws');
+        setStatus('ws', false);
+        setTimeout(connectWS, 1500);
+      };
       ws.onmessage = (event) => {
         render('ws', JSON.parse(event.data));
       };
@@ -165,7 +220,11 @@
     // --- SSE (api-service) ---
     const evtSource = new EventSource(`http://${API_HOST}/sse/professional`);
     evtSource.onopen = () => setStatus('sse', true);
-    evtSource.onerror = () => setStatus('sse', false);
+    evtSource.onerror = () => {
+      protocolStats.sse.reconnects += 1;
+      renderProtocolStats('sse');
+      setStatus('sse', false);
+    };
     evtSource.onmessage = (event) => {
       render('sse', JSON.parse(event.data));
     };
